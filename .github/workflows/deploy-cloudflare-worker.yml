@@ -100,6 +100,52 @@ jobs:
             echo "Patched admin CORS vars: ADMIN_ORIGIN=$ADMIN_ORIGIN ADMIN_ALLOW_CROSS_SITE=${ADMIN_ALLOW_CROSS_SITE:-true}"
           fi
 
+      # Fork deploys ship the default (test) env of wrangler.toml, whose R2
+      # bucket, public URLs and self-update vars are upstream placeholders.
+      # Align them with the resources create-line-harness provisioned. Each
+      # value is optional; unset Variables leave the built config untouched.
+      - name: Patch fork-specific wrangler config
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          WORKER_NAME: ${{ vars.WORKER_NAME }}
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
+          ADMIN_PAGES_PROJECT: ${{ vars.PAGES_PROJECT_NAME }}
+          LIFF_PAGES_PROJECT: ${{ vars.LIFF_PAGES_PROJECT }}
+          WORKER_PUBLIC_URL: ${{ vars.WORKER_PUBLIC_URL }}
+          ADMIN_PUBLIC_URL: ${{ vars.ADMIN_PUBLIC_URL }}
+          LIFF_PUBLIC_URL: ${{ vars.LIFF_PUBLIC_URL }}
+          # Workers Cache is a pilot upstream enables only on its private test
+          # Worker (production sets it to false). Opt in explicitly.
+          WORKER_CACHE_ENABLED: ${{ vars.WORKER_CACHE_ENABLED }}
+        run: |
+          cd apps/worker
+          tmp="$(mktemp)"
+          jq \
+            --arg account "$CLOUDFLARE_ACCOUNT_ID" \
+            --arg d1 "$D1_DATABASE_ID" \
+            --arg worker "$WORKER_NAME" \
+            --arg r2 "$R2_BUCKET_NAME" \
+            --arg admin_project "$ADMIN_PAGES_PROJECT" \
+            --arg liff_project "$LIFF_PAGES_PROJECT" \
+            --arg worker_url "$WORKER_PUBLIC_URL" \
+            --arg admin_url "$ADMIN_PUBLIC_URL" \
+            --arg liff_url "$LIFF_PUBLIC_URL" \
+            --arg cache "$WORKER_CACHE_ENABLED" '
+              def setvar($k; $v): if $v != "" then .vars[$k] = $v else . end;
+              (if $r2 != "" then .r2_buckets |= map(if .binding == "IMAGES" then .bucket_name = $r2 else . end) else . end)
+              | .cache.enabled = ($cache == "true")
+              | setvar("CF_ACCOUNT_ID"; $account)
+              | setvar("D1_DATABASE_ID"; $d1)
+              | setvar("WORKER_NAME"; $worker)
+              | setvar("ADMIN_PAGES_PROJECT"; $admin_project)
+              | setvar("LIFF_PAGES_PROJECT"; $liff_project)
+              | setvar("WORKER_PUBLIC_URL"; $worker_url)
+              | setvar("ADMIN_PUBLIC_URL"; $admin_url)
+              | setvar("LIFF_PUBLIC_URL"; $liff_url)
+            ' dist/line_harness/wrangler.json > "$tmp" && mv "$tmp" dist/line_harness/wrangler.json
+          jq -c "{r2_buckets, cache, public_urls: (.vars | {WORKER_PUBLIC_URL, ADMIN_PUBLIC_URL, LIFF_PUBLIC_URL})}" dist/line_harness/wrangler.json
+
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
